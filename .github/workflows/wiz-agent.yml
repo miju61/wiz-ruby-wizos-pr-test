@@ -1,0 +1,87 @@
+name: Wiz MCP Coding Agent (HW-864)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  wizos-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Write Wiz MCP config
+        env:
+          WIZ_CLIENT_ID: ${{ secrets.WIZ_CLIENT_ID }}
+          WIZ_CLIENT_SECRET: ${{ secrets.WIZ_CLIENT_SECRET }}
+          WIZ_DATACENTER: ${{ secrets.WIZ_DATACENTER }}
+        run: |
+          cat > /tmp/mcp-config.json <<EOF
+          {
+            "mcpServers": {
+              "wiz": {
+                "type": "http",
+                "url": "https://mcp.app.wiz.io",
+                "headers": {
+                  "Wiz-Client-Id": "${WIZ_CLIENT_ID}",
+                  "Wiz-Client-Secret": "${WIZ_CLIENT_SECRET}",
+                  "Wiz-DataCenter": "${WIZ_DATACENTER}"
+                }
+              }
+            }
+          }
+          EOF
+
+      - name: Run Claude Code with Wiz MCP
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: >-
+            --max-turns 30
+            --mcp-config /tmp/mcp-config.json
+            --allowedTools "mcp__wiz__discover,mcp__wiz__execute,Read,Edit,Write,Bash(git:*),Bash(gh pr create:*)"
+          prompt: |
+            You are a security remediation agent for the GitHub repository ${{ github.repository }}.
+            Use only the Wiz MCP tools for Wiz data. Do not guess values you cannot confirm from Wiz.
+
+            Step 1. Find container images built from this repository.
+              - Find the repository with list_code_repositories.
+              - Find linked container images with list_source_mappings (Code to Cloud mappings).
+              - If no container image is linked to this repository, STOP here.
+                Print a short Korean summary explaining that no Code to Cloud mapping exists yet.
+                Do not create a branch or a pull request.
+
+            Step 2. List Critical/High vulnerabilities of the linked image
+              with list_vulnerability_findings (CVE ID, package, severity, fixed version).
+
+            Step 3. Read the Dockerfile in this repository and identify the base image.
+
+            Step 4. Find a matching WizOS image with list_wizos_image_catalog and get_wizos_image.
+              - Keep the same major.minor version as the current base image.
+              - Use a full, pinned tag (for example x.y.z-rN).
+
+            Step 5. Create a branch named wizos-migration-${{ github.run_number }},
+              change only the FROM line of the Dockerfile to the WizOS image, commit, and push.
+
+            Step 6. Open a pull request with gh pr create against main.
+              Write the PR title and body in Korean. The body must include:
+              - The linked image and how it was found (mapping rule)
+              - Critical/High CVEs found (table)
+              - Old base image -> new WizOS image, and why this tag was chosen
+              - Wiz MCP tools used
+              - Anything you could not confirm from Wiz
